@@ -11,9 +11,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    //exe.addIncludePath(.{ .path = "/usr/include/" });
+    exe.addIncludePath(.{ .path = "/usr/include/arpa" });
     exe.linkSystemLibrary("pcap");
     exe.linkSystemLibrary("c");
+    // exe.linkSystemLibrary("arpa");
 
     b.installArtifact(exe);
 
