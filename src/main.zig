@@ -61,18 +61,54 @@ fn fmtIp(ip: [*]const u8, buf: *[20]u8) !void {
     _ = try std.fmt.bufPrint(buf, "{d}.", .{ip[0]});
 }
 
-fn callback(user: [*c]u8, pkthdr: [*c]const c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C) void {
+fn dumpData(data: [*]u8, length: u32) void {
+    var byte: u8 = undefined;
+
+    for (0..length) |i| {
+        byte = data[i];
+
+        print("{x:0>2} ", .{data[i]});
+
+        // TODO: something good comment
+        if ((@mod(i, 16) == 15) or (i == length - 1)) {
+            for (0..(15 - @mod(i, 16))) |_| {
+                print("   ", .{});
+            }
+            print("| ", .{});
+
+            for ((i - @mod(i, 16))..i + 1) |j| {
+                if (j > i) break;
+                byte = data[j];
+
+                if ((byte > 31) and (byte < 127)) {
+                    print("{c}", .{byte});
+                } else {
+                    print(".", .{});
+                } // endif
+            } // endfor
+            print("\n", .{});
+        } // endif
+    } // endfor
+}
+
+fn callback(user: [*c]u8, pkthdr: *c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C) void {
     @setRuntimeSafety(false);
 
     const ether_hdr: *EtherHdr = @ptrCast(@alignCast(packet_ptr));
     const ip_hdr: *IpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN));
     const tcp_hdr: *TcpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN + @sizeOf(TcpHdr)));
+
+    const total_hdr_size: u32 = ETHER_HDR_LEN + @sizeOf(IpHdr) + @as(u32, tcp_hdr.ofs) * 4;
+    const pkt_data_len: u32 = pkthdr.len - total_hdr_size;
+
+    const pkt_data: [*]u8 = @ptrCast(@alignCast(packet_ptr + total_hdr_size));
+
     const src_ip = c.inet_ntoa(c.in_addr{ .s_addr = ip_hdr.ip_src_addr });
     const dst_ip = c.inet_ntoa(c.in_addr{ .s_addr = ip_hdr.ip_dst_addr });
 
     _ = user;
     // _ = ether_hdr;
-    _ = pkthdr;
+    // _ = pkthdr;
     // _ = ip_hdr;
     // _ = tcp_hdr;
 
@@ -80,12 +116,13 @@ fn callback(user: [*c]u8, pkthdr: [*c]const c.pcap_pkthdr, packet_ptr: [*]u8) ca
     print("ethertype = {d}\n", .{ether_hdr.ether_type});
     print(" {s}:{d} ==> ", .{ src_ip, tcp_hdr.tcp_src_port });
     print("{s}:{d}\n", .{ dst_ip, tcp_hdr.tcp_dst_port });
+    dumpData(pkt_data, pkt_data_len);
 }
 
 pub fn main() !void {
     var device: [*c]u8 = undefined;
     var errbuf: [c.PCAP_ERRBUF_SIZE]u8 = undefined;
-    const packets: u32 = 0;
+    const packets: u32 = 5;
     const timeout: u32 = 10000; // milli seconds
 
     device = c.pcap_lookupdev(&errbuf);
