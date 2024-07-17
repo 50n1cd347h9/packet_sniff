@@ -11,6 +11,7 @@ const c = @cImport({
 
 const ETHER_ADDR_LEN = 6;
 const ETHER_HDR_LEN = 14;
+const IP_HDR_LEN = 20;
 
 const pcap_t: type = c.pcap_t;
 
@@ -25,6 +26,11 @@ const Packet = packed struct {
     ip_hdr: IpHdr,
     tcp_hdr: TcpHdr,
     data: u8,
+};
+
+const Hoge = packed struct {
+    x: u32,
+    y: u32,
 };
 
 const IpHdr = packed struct {
@@ -82,12 +88,37 @@ fn decodeEther(buf: *ArrayList(u8), ether_hdr: *EtherHdr) void {
     buf.writer().print("type: {x}\n", .{ether_hdr.ether_type}) catch {};
 }
 
+fn fmtIp(ip_buf: []u8, ip: u32) []u8 {
+    @memset(ip_buf, 0);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    const string = std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{
+        ip << 24 >> 24,
+        ip << 16 >> 24,
+        ip << 8 >> 24,
+        ip << 0 >> 24,
+    }) catch {
+        return ip_buf;
+    };
+    std.mem.copyForwards(u8, ip_buf, string);
+    return ip_buf;
+}
+
 fn decodeIp(buf: *ArrayList(u8), ip_hdr: *IpHdr) void {
-    const src_ip = c.inet_ntoa(c.in_addr{ .s_addr = ip_hdr.ip_src_addr });
-    const dst_ip = c.inet_ntoa(c.in_addr{ .s_addr = ip_hdr.ip_dst_addr });
+    var ip_buf: [20]u8 = undefined;
 
     buf.writer().print("\t((ip header))\n", .{}) catch {};
-    buf.writer().print("\t{s} => {s}\n", .{ src_ip, dst_ip }) catch {};
+    // buf.writer().print("\t{0s} => {1s}\n", .{
+    //     fmtIp(&ip_buf, ip_hdr.ip_src_addr),
+    //     fmtIp(&ip_buf, ip_hdr.ip_dst_addr),
+    // }) catch {};
+    buf.writer().print("\t{s} => ", .{
+        fmtIp(&ip_buf, ip_hdr.ip_src_addr),
+    }) catch {};
+    buf.writer().print("{s}\n", .{
+        fmtIp(&ip_buf, ip_hdr.ip_dst_addr),
+    }) catch {};
+    buf.writer().print("\ttos: {d}\n", .{ip_hdr.ip_tos}) catch {};
     buf.writer().print("\tprotocol: {d}, id: {d}, length: {d}\n", .{
         ip_hdr.ip_proto,
         c.ntohs(ip_hdr.ip_id),
@@ -100,10 +131,12 @@ fn decodeTcp(buf: *ArrayList(u8), tcp_hdr: *TcpHdr) void {
     const dst_port = c.ntohs(tcp_hdr.tcp_dst_port);
     const seq = c.ntohl(tcp_hdr.tcp_seq);
     const ack = c.ntohl(tcp_hdr.tcp_ack);
+    const header_sz = (tcp_hdr.ofs >> 4) * 4;
 
     buf.writer().print("\t\t((tcp header))\n", .{}) catch {};
     buf.writer().print("\t\tport: {d} => {d}\n", .{ src_port, dst_port }) catch {};
     buf.writer().print("\t\tSeq: {d}, Ack: {d}\n", .{ seq, ack }) catch {};
+    buf.writer().print("\t\theader size: {d}\n", .{header_sz}) catch {};
 }
 
 fn callback(user: [*c]u8, pkthdr: *c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C) void {
@@ -115,11 +148,11 @@ fn callback(user: [*c]u8, pkthdr: *c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C
 
     const ether_hdr: *EtherHdr = @ptrCast(@alignCast(packet_ptr));
     const ip_hdr: *IpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN));
-    const tcp_hdr: *TcpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN + @sizeOf(IpHdr)));
+    const tcp_hdr: *TcpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN + IP_HDR_LEN));
 
-    // const total_hdr_size: u32 = ETHER_HDR_LEN + @sizeOf(IpHdr) + @as(u32, tcp_hdr.ofs) * 4;
-    // const pkt_data_len: u32 = pkthdr.len - total_hdr_size;
-    // const pkt_data: [*]u8 = @ptrCast(@alignCast(packet_ptr + total_hdr_size));
+    const total_hdr_size: u32 = ETHER_HDR_LEN + IP_HDR_LEN + (tcp_hdr.ofs >> 4) * 4;
+    const pkt_data_len: u32 = pkthdr.len - total_hdr_size;
+    const pkt_data: [*]u8 = @ptrCast(@alignCast(packet_ptr + total_hdr_size));
 
     var buf: ArrayList(u8) = ArrayList(u8).init(allocator);
     defer buf.deinit();
@@ -128,8 +161,8 @@ fn callback(user: [*c]u8, pkthdr: *c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C
     decodeIp(&buf, ip_hdr);
     decodeTcp(&buf, tcp_hdr);
     if (pkthdr.len > 0)
-        dumpData(&buf, packet_ptr, pkthdr.len);
-    //dumpData(&buf, pkt_data, pkthdr.len);
+        dumpData(&buf, pkt_data, pkt_data_len);
+    //  dumpData(&buf, packet_ptr, pkthdr.len);
     stdout.print("{s}\n", .{buf.items}) catch {};
 }
 
