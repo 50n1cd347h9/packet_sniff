@@ -59,6 +59,22 @@ const TcpHdr = packed struct {
     padding: u32,
 };
 
+fn fmtIp(ip_buf: []u8, ip: u32) []u8 {
+    @memset(ip_buf, 0);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    const string = std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{
+        ip << 24 >> 24,
+        ip << 16 >> 24,
+        ip << 8 >> 24,
+        ip << 0 >> 24,
+    }) catch {
+        return ip_buf;
+    };
+    std.mem.copyForwards(u8, ip_buf, string);
+    return ip_buf;
+}
+
 fn dumpData(buf: *ArrayList(u8), data: [*]u8, length: u32) void {
     buf.writer().print("((data))\n", .{}) catch {};
     var byte: u8 = undefined;
@@ -88,22 +104,6 @@ fn decodeEther(buf: *ArrayList(u8), ether_hdr: *EtherHdr) void {
     buf.writer().print("type: {x}\n", .{ether_hdr.ether_type}) catch {};
 }
 
-fn fmtIp(ip_buf: []u8, ip: u32) []u8 {
-    @memset(ip_buf, 0);
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    const string = std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{
-        ip << 24 >> 24,
-        ip << 16 >> 24,
-        ip << 8 >> 24,
-        ip << 0 >> 24,
-    }) catch {
-        return ip_buf;
-    };
-    std.mem.copyForwards(u8, ip_buf, string);
-    return ip_buf;
-}
-
 fn decodeIp(buf: *ArrayList(u8), ip_hdr: *IpHdr) void {
     var ip_buf: [20]u8 = undefined;
 
@@ -112,12 +112,8 @@ fn decodeIp(buf: *ArrayList(u8), ip_hdr: *IpHdr) void {
     //     fmtIp(&ip_buf, ip_hdr.ip_src_addr),
     //     fmtIp(&ip_buf, ip_hdr.ip_dst_addr),
     // }) catch {};
-    buf.writer().print("\t{s} => ", .{
-        fmtIp(&ip_buf, ip_hdr.ip_src_addr),
-    }) catch {};
-    buf.writer().print("{s}\n", .{
-        fmtIp(&ip_buf, ip_hdr.ip_dst_addr),
-    }) catch {};
+    buf.writer().print("\t{s} => ", .{fmtIp(&ip_buf, ip_hdr.ip_src_addr)}) catch {};
+    buf.writer().print("{s}\n", .{fmtIp(&ip_buf, ip_hdr.ip_dst_addr)}) catch {};
     buf.writer().print("\ttos: {d}\n", .{ip_hdr.ip_tos}) catch {};
     buf.writer().print("\tprotocol: {d}, id: {d}, length: {d}\n", .{
         ip_hdr.ip_proto,
@@ -149,20 +145,23 @@ fn callback(user: [*c]u8, pkthdr: *c.pcap_pkthdr, packet_ptr: [*]u8) callconv(.C
     const ether_hdr: *EtherHdr = @ptrCast(@alignCast(packet_ptr));
     const ip_hdr: *IpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN));
     const tcp_hdr: *TcpHdr = @ptrCast(@alignCast(packet_ptr + ETHER_HDR_LEN + IP_HDR_LEN));
-
     const total_hdr_size: u32 = ETHER_HDR_LEN + IP_HDR_LEN + (tcp_hdr.ofs >> 4) * 4;
     const pkt_data_len: u32 = pkthdr.len - total_hdr_size;
-    const pkt_data: [*]u8 = @ptrCast(@alignCast(packet_ptr + total_hdr_size));
-
+    const pkt_data: [*]u8 = packet_ptr + total_hdr_size;
     var buf: ArrayList(u8) = ArrayList(u8).init(allocator);
     defer buf.deinit();
+
     buf.writer().print("== caught packet === \n", .{}) catch {};
+    buf.writer().print("header length: {d}, packet length: {d}, packet data: {d}\n", .{
+        total_hdr_size,
+        pkthdr.len,
+        pkt_data_len,
+    }) catch {};
     decodeEther(&buf, ether_hdr);
     decodeIp(&buf, ip_hdr);
     decodeTcp(&buf, tcp_hdr);
-    if (pkthdr.len > 0)
+    if (pkt_data_len > 0)
         dumpData(&buf, pkt_data, pkt_data_len);
-    //  dumpData(&buf, packet_ptr, pkthdr.len);
     stdout.print("{s}\n", .{buf.items}) catch {};
 }
 
